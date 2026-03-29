@@ -1,52 +1,98 @@
 import os
 import shutil
-from dotenv import load_dotenv
+import uuid
 
 from langchain_community.document_loaders import (
     DirectoryLoader,
-    UnstructuredPDFLoader,
+    PyPDFLoader,
     TextLoader
 )
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
-load_dotenv()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-if os.path.exists("./chroma_db"):
-    shutil.rmtree("./chroma_db")
-    print("Old database removed!")
+from langchain_community.embeddings import HuggingFaceEmbeddings
 
-pdf_loader = DirectoryLoader(path="./data",glob="**/*.pdf",loader_cls=UnstructuredPDFLoader)
+# Folder Setup
+DATA_DIR = "data"
+DB_DIR = "chroma_db"
 
-text_loader = DirectoryLoader(path="./data",glob="**/*.txt",loader_cls=TextLoader)
+os.makedirs(DATA_DIR, exist_ok=True)
+# Startup Cleanup
+def clear_old_database():
+    if os.path.exists(DB_DIR):
+        shutil.rmtree(DB_DIR)
+        print("Old database cleared.")
+# Load Documents
+def load_documents():
+    print("Loading documents...")
 
-pdf_docs = pdf_loader.load()
-text_docs = text_loader.load()
+    pdf_loader = DirectoryLoader(
+        DATA_DIR,
+        glob="**/*.pdf",
+        loader_cls=PyPDFLoader
 
-docs = pdf_docs + text_docs
+    )
 
-print(f"Loaded {len(docs)} documents")
-#print(docs)
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=3000,chunk_overlap=200)
+    text_loader = DirectoryLoader(
+        DATA_DIR,
+        glob="**/*.txt",
+        loader_cls=TextLoader
+    )
 
-splitted_docs = text_splitter.split_documents(docs)
+    documents = []
+    documents.extend(pdf_loader.load())
+    documents.extend(text_loader.load())
 
-print(f"Created {len(splitted_docs)} chunks")
-for doc in splitted_docs:
-    doc.metadata = {
-        "source": doc.metadata.get("source", "unknown")
-    }
-embedding_model = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
-)
-collection_name = "milestone1_collection"
+    if not documents:
+        raise ValueError("No documents found in the data directory.")
 
-vector_store = Chroma.from_documents(
-    documents=splitted_docs,
-    embedding=embedding_model,
-    persist_directory="./chroma_db",
-    collection_name=collection_name
-)
+    print(f"Loaded {len(documents)} documents.")
+    return documents
+# Metadata Cleaning
+def clean_metadata(documents):
+    for doc in documents:
+        doc.metadata = {
+            "source": str(doc.metadata.get("source", "unknown"))
+        }
+    return documents
+# Chunking
+def chunk_documents(documents):
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=3000,
+        chunk_overlap=200
+    )
 
-print("Milestone 1 Completed Successfully!")
+    splits = splitter.split_documents(documents)
+    print(f"{len(splits)} chunks created.")
+    return splits
+# Create Vector Database
+def create_vector_db(splits):
+    print("Generating embeddings...")
+
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    )
+
+    collection_name = f"rag_collection_{uuid.uuid4()}"
+
+    vector_db = Chroma.from_documents(
+        documents=splits,
+        embedding=embeddings,
+        persist_directory=DB_DIR,
+        collection_name=collection_name
+    )
+
+    vector_db.persist()
+if __name__ == "__main__":
+    print("Starting RAG document processing...")
+
+    clear_old_database()
+
+    documents = load_documents()
+    documents = clean_metadata(documents)
+
+    splits = chunk_documents(documents)
+
+    create_vector_db(splits)
+
+    print("Vector database created successfully!")
